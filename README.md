@@ -123,25 +123,10 @@ SQLite with WAL mode. Tables: `users`, `sessions`, `spaces`, `channels`, `messag
 
 Data stored at `server/data/connecthub.db` (auto-created on first run).
 
-## Current Status
+## Tracking
 
-The core flow works: register, login, create spaces, create channels, send/receive messages in real-time, invite users, edit/delete messages, kick members.
-
-### What's Working
-- Auth (register, login, session restore)
-- Spaces (create, join via invite, leave)
-- Channels (create, list, switch)
-- Messages (send via WS, fetch via REST, edit, delete)
-- Member management (list, kick)
-- Real-time messaging via WebSocket gateway
-- Typing indicators
-
-### What's Not
-- E2EE is fully stubbed — all "encrypted" fields are plaintext
-- WS broadcasts for mutations (edit, delete, kick, channel create) are not implemented — only the actor sees changes
-- No DMs, read states, presence, voice, or user settings
-- See [docs/TODO.md](docs/TODO.md) for the full feature checklist
-- See [docs/ISSUES.md](docs/ISSUES.md) for 37 known bugs by severity
+- [docs/ISSUES.md](docs/ISSUES.md) — Known bugs (38 issues, ranked by severity)
+- [docs/TODO.md](docs/TODO.md) — Feature checklist and testing plan
 
 ## License
 
