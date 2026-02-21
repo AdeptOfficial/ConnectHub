@@ -2,67 +2,99 @@
 
 ## V1 Goal
 
-A working self-hosted node that can connect to other nodes, send encrypted messages with sender ownership, and provide a modern chat UX. Prove the encrypted lease model works.
+A self-hosted community server with text channels, voice channels, and 1:1 DMs — all end-to-end encrypted with the kill switch. Prove the Encrypted Lease Protocol works in a Discord-like UX.
+
+**Priority order: Text channels → Voice channels → DMs → Everything else.**
 
 ## V1 Features (Must Have)
 
-### Core
-- [ ] Single-user Docker node (`docker run connecthub`)
-- [ ] Keypair-based identity (generated on first run)
-- [ ] Passphrase-sealed node (SQLCipher encrypted database)
-- [ ] Node-to-node WebSocket connections
-- [ ] Signal Protocol E2EE (X3DH + Double Ratchet via libsignal)
-- [ ] PQXDH (post-quantum key exchange)
+### Core Infrastructure
+- [ ] ConnectHub server (Bun + Hono/Elysia)
+- [ ] SQLite database (WAL mode)
+- [ ] WebSocket gateway for real-time messaging
+- [ ] Docker Compose deployment
+- [ ] Environment variable configuration
+- [ ] Volume mount for persistent data
 
-### Messaging
-- [ ] Direct messages (1:1)
-- [ ] Encrypted lease protocol (sender holds decryption keys)
-- [ ] Kill switch (revoke all messages from all peers)
-- [ ] Ephemeral messages (auto-delete timer, configurable per message or per conversation)
-- [ ] Message queueing for offline peers (deliver when they reconnect)
+### Authentication & Identity
+- [ ] Keypair-based identity (generated on registration)
+- [ ] Username + passphrase registration
+- [ ] Invite-only registration (admin generates invite links)
+- [ ] Session tokens for client authentication
+- [ ] Prekey upload/distribution for E2EE session setup
 
-### Spaces (Groups)
-- [ ] Create/join Spaces with channels (text only for v1)
-- [ ] Basic role system (admin, member)
-- [ ] Sender Keys for group encryption
-- [ ] Space config replicated across member nodes
+### E2EE — Text Channels (Priority 1)
+- [ ] MLS group key management (RFC 9420, via openmls WASM)
+- [ ] Sender Keys per member (distributed via MLS)
+- [ ] Encrypted Lease Protocol (LeaseKey envelopes, LeaseWrappingKey)
+- [ ] Kill switch (revoke LeaseWrappingKey, delete envelopes, broadcast REVOKE)
+- [ ] PQXDH for post-quantum key exchange
+- [ ] Message queuing for offline members (server stores encrypted blobs + envelopes)
+
+### E2EE — Direct Messages
+- [ ] Signal Protocol (X3DH + Double Ratchet via libsignal)
+- [ ] LeaseKey layer on DMs (same kill switch as Spaces)
+- [ ] PQXDH for DM session establishment
+
+### Spaces (Communities)
+- [ ] Create Spaces with encrypted config (name, description)
+- [ ] Text channels within Spaces
+- [ ] Voice channels within Spaces
+- [ ] Role system (owner, admin, member)
+- [ ] Invite links for Spaces
+- [ ] Member join/leave with MLS re-keying (O(log n))
+- [ ] Member ban with MLS re-keying
+- [ ] History visibility setting (from_join, 7d default, 30d, full)
+- [ ] Lease TTL setting per Space (1h, 24h, 7d default, 30d, none)
+
+### Voice Channels (Priority 2)
+- [ ] WebRTC voice with DTLS-SRTP encryption
+- [ ] coturn TURN relay for NAT traversal
+- [ ] Signaling via server WebSocket
+- [ ] Join/leave voice channels (persistent, like Discord)
+- [ ] Mesh topology for small groups (2-4 participants)
+- [ ] Mute/deafen controls
+- [ ] Voice activity indicators
+
+### Moderation
+- [ ] Admin: hide messages (UI-level, blob persists)
+- [ ] Admin: ban members (MLS re-key, full lockout)
+- [ ] Admin: manage roles
 
 ### Media
-- [ ] Image sharing (encrypted, stored on sender's node)
+- [ ] Image sharing (encrypted, stored on server)
 - [ ] File sharing (encrypted, with size limits)
-- [ ] Media decryption keys included in leased message payload
+- [ ] Media encryption keys inside LeaseKey envelope (kill switch applies to media)
 
-### Frontend
-- [ ] Web-based client (TypeScript + Tailwind CSS)
-- [ ] Responsive design (works on mobile browsers)
+### Frontend (Web Client)
+- [ ] TypeScript + Tailwind CSS
+- [ ] Responsive design (desktop + mobile browser)
 - [ ] Real-time updates via WebSocket
-- [ ] Channel list, message view, member list
-- [ ] Contact management (add by public key or node address)
+- [ ] Space sidebar, channel list, message view, member list
+- [ ] Contact/DM list
+- [ ] Voice channel UI (join, leave, mute, participants)
+- [ ] Kill switch button in settings
+- [ ] Theme support (CSS variables for customization)
 
 ### Deployment
-- [ ] Single Docker image
-- [ ] Docker Compose for easy setup
-- [ ] Volume mount for persistent encrypted data
-- [ ] Environment variable configuration
+- [ ] Docker Compose (server + coturn)
+- [ ] Setup guide for self-hosters
+- [ ] Admin CLI for invite generation, user management
 
 ## V2 Features (After MVP)
 
-### Communication
-- [ ] Voice calls (1:1 WebRTC)
-- [ ] Video calls (1:1 WebRTC)
-- [ ] Group voice/video (mesh for small groups, SFU for larger)
-- [ ] Voice channels (persistent, join/leave like Discord)
+### Voice/Video Enhancements
+- [ ] LiveKit SFU for group calls 5+ participants
+- [ ] Video calls (1:1 and group)
 - [ ] Screen sharing
+- [ ] Per-user volume controls
 
-### Multi-Tenant
-- [ ] ConnectHub Manager (orchestrator for hosting multiple tenant nodes)
-- [ ] Tenant provisioning CLI (`connecthub add-tenant <name>`)
-- [ ] Reverse proxy with per-tenant subdomains
-- [ ] Resource limits per tenant
-
-### Mobile
-- [ ] Progressive Web App (PWA) with offline support
-- [ ] Push notifications (UnifiedPush for Android, Web Push for iOS)
+### Data Export
+- [ ] Export per Space, per channel, or date range
+- [ ] Standalone HTML viewer (open in browser, no server needed)
+- [ ] JSON export (machine-readable)
+- [ ] Markdown export (human-readable)
+- [ ] Include/exclude media option
 
 ### Social Features
 - [ ] Stories/Status (ephemeral posts, 24h default)
@@ -71,24 +103,29 @@ A working self-hosted node that can connect to other nodes, send encrypted messa
 - [ ] User profiles with avatars
 - [ ] Typing indicators, read receipts (opt-in)
 
-### Privacy Enhancements
-- [ ] Sealed sender between nodes (hide social graph)
-- [ ] Optional relay/proxy nodes (hide IP addresses)
-- [ ] Configurable lease TTLs per contact
-- [ ] Trust levels (different grace periods for different contacts)
+### Client Distribution
+- [ ] Electron desktop app (stable + canary channels)
+- [ ] Progressive Web App (PWA) with install prompt
+- [ ] Push notifications (UnifiedPush for Android, Web Push for iOS)
 
 ### Administration
-- [ ] Space moderation tools (ban, mute, hide messages)
-- [ ] Node admin dashboard (storage usage, connected peers, resource monitoring)
-- [ ] Backup/restore (encrypted export/import)
-- [ ] Node migration tool (move identity between hosts)
+- [ ] Admin dashboard (web-based)
+- [ ] Storage usage, connection metrics, bandwidth monitoring
+- [ ] Backup/restore tools
+- [ ] Server health checks
+
+### Privacy Enhancements
+- [ ] Sealed sender between clients (hide who messages whom from server)
+- [ ] Configurable lease TTL per conversation (DMs)
+- [ ] Key backup/recovery (passphrase-derived, stored encrypted on server)
 
 ## V3 Features (Future)
 
+- [ ] Federation (cross-server communication)
 - [ ] React Native mobile app
-- [ ] Sealed sender with optional relay network
 - [ ] Web of trust / reputation system
 - [ ] Plugin/bot system for Spaces
 - [ ] Custom emoji/sticker packs
 - [ ] Bandwidth optimization (lazy-load media, thumbnail previews)
 - [ ] Federated Space discovery (opt-in directory)
+- [ ] PostgreSQL backend option (for large deployments)

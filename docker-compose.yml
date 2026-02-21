@@ -1,0 +1,15 @@
+services:
+  connecthub:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - DB_PATH=/app/data/connecthub.db
+      - CLIENT_ORIGIN=http://localhost:3000
+    volumes:
+      - connecthub-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  connecthub-data:

@@ -1,0 +1,10 @@
+{
+  "name": "connecthub",
+  "private": true,
+  "workspaces": ["shared", "server", "client"],
+  "scripts": {
+    "dev:server": "bun run --filter server dev",
+    "dev:client": "bun run --filter client dev",
+    "dev": "bun run dev:server & bun run dev:client"
+  }
+}

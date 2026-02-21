@@ -2,115 +2,199 @@
 
 ## The Core Problem
 
-In traditional federated/P2P messaging, once a message is sent, the sender loses control. The recipient's server/device holds a copy and the sender cannot revoke it. ConnectHub's defining feature is **cryptographically enforced message ownership** — the sender retains control even after delivery.
+In traditional E2EE messaging (Signal, Matrix, WhatsApp), once a message is delivered and decrypted, the sender loses control. The recipient's device has the plaintext, and the server has an encrypted blob the recipient can always decrypt. There is no revocation mechanism.
 
-## The Encrypted Lease Model
+ConnectHub's defining feature is **cryptographically enforced message ownership** — the sender retains a key that is required to decrypt messages, and can destroy that key at any time (kill switch).
 
-This is ConnectHub's core invention. No existing project implements this.
+## How It Works (Option C: Server + Clients)
 
-### How It Works
+The Encrypted Lease Protocol adds a third encryption layer on top of standard E2EE. Messages are encrypted normally with the Signal Protocol or MLS, but the decryption keys are **wrapped** in an additional envelope that only the sender can control.
 
-```
-Alice's Node                          Bob's Node
-┌─────────────┐    encrypted blob    ┌─────────────┐
-│ SQLite DB   │ ──────────────────►  │ SQLite DB    │
-│ (permanent) │                      │ (encrypted   │
-│ + holds     │    lease renewal     │  blobs only) │
-│   decrypt   │ ──────────────────►  │ + needs key  │
-│   keys      │                      │   from Alice │
-└─────────────┘                      └──────────────┘
-```
-
-1. **Alice sends a message** — it's encrypted with a per-message key and sent as an opaque blob to Bob's node
-2. **Bob's node stores the blob** — but cannot decrypt it without Alice's cooperation
-3. **Decryption keys are "leased"** — Alice's node must be reachable for Bob to decrypt
-4. **Alice kills switch** → keys stop being served → blobs become unreadable
-5. **Bob's node auto-deletes** expired/unreadable blobs after a grace period
-
-### Key Architecture
+### Encryption Layers
 
 ```
-Per-message encryption:
-  MessageKey_N = HKDF(SenderMasterKey, message_id, "content")
-  EncryptedBlob = AES-256-GCM(MessageKey_N, plaintext)
+Layer 1: Content encryption (Signal Protocol / MLS Sender Key)
+  → Standard E2EE. Server can't read content.
 
-Lease mechanism:
-  - Bob's client requests decryption key from Alice's node per-message (or per-batch)
-  - Alice's node validates Bob's session, checks kill switch status
-  - If active: returns MessageKey_N (encrypted via the Double Ratchet session)
-  - If killed: returns nothing / connection refused
-  - Keys can be cached on Bob's device for a TTL (e.g., 5 minutes)
-  - Cache expiry forces re-fetch from Alice's node
+Layer 2: LeaseKey envelope (ConnectHub's addition)
+  → The key needed to unlock Layer 1 is wrapped in an envelope
+  → The envelope is encrypted with the sender's LeaseWrappingKey
+  → The envelope is pre-uploaded to the server alongside the message
+  → Recipients unwrap the envelope using the MLS group key
 
-Kill switch:
-  1. Alice triggers kill switch on her node
-  2. Node broadcasts REVOKE to all connected peers
-  3. Node stops serving lease keys
-  4. All cached keys on peer devices expire
-  5. Encrypted blobs become unreadable
+Layer 3: LeaseWrappingKey (sender's master control)
+  → Lives ONLY on the sender's client device(s)
+  → Server NEVER sees this key
+  → Destroying this key = permanently revoking all messages
 ```
 
-### What Bob Sees
+### Message Send Flow
 
 ```
-CONNECTED STATE:                    KILL SWITCH ACTIVATED:
+Alice sends "hey everyone" to #general:
 
-Bob's screen:                       Bob's screen:
-
-  Alice: Hey how's it going?          [Alice is disconnected]
-  Alice: Check out this pic           [No message history visible]
-  You:   Looks great!                 You:   Looks great!
-  Alice: Thanks!
-                                    Alice's messages = GONE
-                                    Bob keeps only HIS own messages
+Alice's Client                        Server                     Bob's Client
+     │                                  │                             │
+     │  1. Encrypt content with         │                             │
+     │     SenderKey (MLS)              │                             │
+     │     → EncryptedBlob              │                             │
+     │                                  │                             │
+     │  2. Generate MessageKey_N        │                             │
+     │                                  │                             │
+     │  3. Wrap MessageKey_N in         │                             │
+     │     LeaseEnvelope using:         │                             │
+     │     - Alice's LeaseWrappingKey   │                             │
+     │     - MLS group key (so members  │                             │
+     │       can unwrap)                │                             │
+     │     → LeaseEnvelope              │                             │
+     │                                  │                             │
+     │  4. Upload both:                 │                             │
+     │  ───────────────────────────────►│                             │
+     │  { EncryptedBlob,                │  5. Store both.             │
+     │    LeaseEnvelope,                │     Can't read either.      │
+     │    channel_id, timestamp }       │                             │
+     │                                  │  6. Route to Bob:           │
+     │                                  │ ───────────────────────────►│
+     │                                  │                             │
+     │                                  │     7. Unwrap LeaseEnvelope │
+     │                                  │        with MLS group key   │
+     │                                  │        → get MessageKey_N   │
+     │                                  │                             │
+     │                                  │     8. Decrypt EncryptedBlob│
+     │                                  │        → "hey everyone" ✅  │
 ```
 
-### Why This Works (Trust Model)
+### Kill Switch Flow
 
-- Bob **cannot** read Alice's messages without Alice's active cooperation
-- This is NOT "trust Bob to delete" — it's "Bob literally cannot decrypt without Alice"
-- Even if Bob patches his node to ignore revoke commands, he still can't read the blobs
-- The only attack vector is Bob screenshotting/copying plaintext while the lease is active (same limitation as any E2EE system — you can't prevent screenshots)
+```
+Alice activates kill switch:
 
-### Comparison to Other Approaches
+Alice's Client                        Server                     Bob's Client
+     │                                  │                             │
+     │  1. Send REVOKE command          │                             │
+     │  ───────────────────────────────►│                             │
+     │                                  │  2. Delete all of Alice's   │
+     │  3. Destroy LeaseWrappingKey     │     LeaseEnvelopes          │
+     │     locally (permanent)          │                             │
+     │                                  │  3. Broadcast REVOKE to     │
+     │                                  │     all connected clients   │
+     │                                  │ ───────────────────────────►│
+     │                                  │                             │
+     │                                  │     4. Invalidate cached    │
+     │                                  │        LeaseKeys from Alice │
+     │                                  │                             │
+     │                                  │     5. Alice's messages     │
+     │                                  │        now show as          │
+     │                                  │        [message revoked]    │
 
-**Approach 1: Live Stream (RAM only)**
-- Messages never stored on peer, only displayed in real-time
-- Problem: Bob can't see history when Alice is offline
-- Too restrictive for Discord-like UX
+State after kill switch:
 
-**Approach 2: Encrypted Lease (our choice)**
-- Blobs stored on peer, keys served on-demand
-- Bob sees history while Alice is online
-- Kill switch = stop serving keys
-- Best balance of UX and privacy
+  Server has: Alice's EncryptedBlobs (unreadable without LeaseEnvelopes)
+  Server has: NO LeaseEnvelopes (deleted)
+  Bob has:    NO valid LeaseKeys (expired/invalidated)
+  Alice has:  NO LeaseWrappingKey (destroyed)
 
-**Approach 3: Revocable Storage**
-- Messages stored on peer with revoke commands
-- Problem: requires trusting peer to honor revoke
-- Bob could patch his node to ignore revokes
+  Even if server kept LeaseEnvelopes (malicious):
+    → They're encrypted with Alice's LeaseWrappingKey
+    → That key is destroyed
+    → Envelopes are permanently unreadable
 
-## Edge Cases
+  Double protection: cooperative deletion + cryptographic revocation
+```
 
-### Alice's Node Goes Down Temporarily
-- Bob's cached keys continue working for their TTL
-- After TTL expiry, Alice's messages show as "sender offline — messages temporarily unavailable"
-- When Alice comes back, keys are re-served and messages reappear
-- This distinguishes a kill switch (intentional) from downtime (temporary)
+### What Users See
 
-### Grace Period for Temporary Outages
-- Lease keys can have a longer TTL for "trusted" contacts
-- Configurable per-contact: "allow 1 hour offline grace" vs "immediate revoke"
-- Kill switch overrides all grace periods (immediate revoke signal)
+```
+NORMAL:                              AFTER ALICE'S KILL SWITCH:
 
-### Group Spaces
-- Each member's messages are independently leased
-- If Alice kills switch in a group, only her messages vanish
-- Other members' messages remain readable
-- The Space config itself is replicated and persists
+#general                             #general
 
-### Media/Attachments
-- Media encrypted with a separate content key (like Signal's CDN model)
-- Content key is included in the leased message payload
-- Kill switch = media also becomes undecryptable
-- Peer nodes can choose to cache encrypted media blobs or fetch on-demand
+  Alice: hey everyone                  [message revoked]
+  Bob:   what's up                     Bob:   what's up
+  Alice: anyone want to play?          [message revoked]
+  Carol: I'm down                      Carol: I'm down
+  Alice: let's go                      [message revoked]
+
+Alice's messages: gone.
+Bob's and Carol's messages: unaffected (their own LeaseWrappingKeys).
+```
+
+## Why This Works (Trust Model)
+
+| Threat | Protection |
+|---|---|
+| Server operator reads database | E2EE — server has only encrypted blobs |
+| Server ignores delete command | LeaseWrappingKey destroyed on client — envelopes unreadable regardless |
+| Recipient caches LeaseKeys | Keys have TTL, expire naturally. Kill switch broadcast invalidates caches immediately. |
+| Recipient screenshots/copies plaintext | Same limitation as ALL E2EE systems. You can't un-show something already displayed. |
+| Attacker compromises server | Gets encrypted blobs + encrypted envelopes. Both useless without client keys. |
+
+## Offline Delivery (No Sender Online Requirement)
+
+**Critical design decision:** The sender does NOT need to be online for recipients to read messages. LeaseKey envelopes are pre-uploaded to the server at send time.
+
+```
+Alice sends message at 2:00 PM, goes to sleep.
+Bob comes online at 5:00 AM (different timezone, 3 days later).
+
+  1. Bob connects to server
+  2. Server delivers queued: EncryptedBlob + LeaseEnvelope
+  3. Bob unwraps LeaseEnvelope with MLS group key
+  4. Bob decrypts message
+  5. Bob reads "hey everyone" ✅
+
+Alice was asleep the entire time. No interaction needed.
+```
+
+## Lease TTL Configuration
+
+LeaseKey envelopes have a TTL (time-to-live) set by the Space admin at creation:
+
+```
+Space Settings → Lease TTL:
+
+  "1h"    → high security (messages expire 1 hour after send)
+  "24h"   → balanced
+  "7d"    → casual community (DEFAULT)
+  "30d"   → archive-friendly
+  "none"  → no expiry (messages permanent until kill switch)
+
+TTL applies to LeaseEnvelopes on the server.
+After TTL expires, server auto-deletes the envelope.
+EncryptedBlob becomes unreadable (no key).
+
+Kill switch overrides TTL — immediate revocation regardless of setting.
+```
+
+## 1:1 Direct Messages
+
+For DMs, the same lease model applies but using Signal Protocol instead of MLS:
+
+```
+Alice DMs Bob:
+
+  1. Message encrypted with Signal Protocol (X3DH + Double Ratchet + PQXDH)
+  2. LeaseKey envelope wraps the decryption key
+  3. Both uploaded to server
+  4. Bob decrypts as normal
+
+  Kill switch on DMs:
+  - Alice can revoke all DM messages sent to Bob (or all DMs to everyone)
+  - Granular: per-conversation or global kill switch
+```
+
+## Media / Attachments
+
+```
+Alice shares a screenshot in #general:
+
+  1. Generate random AES key for the file
+  2. Encrypt file locally → upload encrypted blob to server
+  3. Include file's AES key inside the message content
+  4. Message is encrypted with Sender Key + LeaseKey as normal
+
+  Server stores: encrypted file blob (opaque, can't read)
+  Kill switch: message revoked → file key lost → file undecryptable
+
+  Media follows the same ownership model as text.
+```

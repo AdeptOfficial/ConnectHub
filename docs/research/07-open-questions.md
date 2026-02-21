@@ -1,124 +1,120 @@
-# ConnectHub — Open Questions & Decisions Needed
+# ConnectHub — Open Questions & Remaining Decisions
 
-## Critical Path Questions
+## Decided (Locked In)
 
-### 1. Offline Message Delivery
+These questions have been answered through our design discussions:
 
-**Problem:** If Bob's node is down when Alice sends a message, what happens?
+- **Architecture:** Option C — traditional server/client with zero-knowledge relay + Encrypted Lease Protocol
+- **Offline delivery:** Server queues encrypted blobs + pre-uploaded LeaseKey envelopes. Sender does NOT need to be online.
+- **History visibility:** 7 days default for new members, admin configurable (from_join, 7d, 30d, full)
+- **Lease TTL:** Per-Space configurable (1h, 24h, 7d default, 30d, none)
+- **Group key management:** MLS (RFC 9420) with TreeKEM — O(log n) for member changes
+- **Voice/video:** Standard WebRTC with DTLS-SRTP, no lease keys needed. coturn for NAT traversal, LiveKit SFU for large groups (V2).
+- **Moderation:** Admins can hide messages (UI-level), ban members (MLS re-key). Admins cannot read or delete message content.
+- **Kill switch:** Sender destroys LeaseWrappingKey + server deletes LeaseEnvelopes. Double protection (cooperative + cryptographic).
 
-**Options:**
-- **Queue on Alice's node** — deliver when Bob comes back online. Alice's node holds the encrypted blob until Bob's node is reachable. Simple but requires Alice's node to track delivery state.
-- **Relay through a mutual peer** — if Alice and Bob share a Space with Carol, Carol's node could relay. Adds complexity and trust questions.
-- **Optional lightweight relay service** — a "dead drop" relay that holds encrypted blobs temporarily. Like Signal's server-side queue but decentralized.
+## Open Questions
 
-**Recommendation:** Queue on sender's node for v1. Simple, no additional infrastructure, consistent with "sender owns everything" model.
-
-### 2. NAT Traversal & Discovery
-
-**Problem:** Not everyone can expose a public port. Home routers, CGNAT, firewalls.
-
-**Options:**
-- **UPnP/NAT-PMP** — automatic port forwarding (works on many home routers)
-- **Reverse tunnel** — services like Cloudflare Tunnel, Tailscale, or a custom relay
-- **DHT-based discovery** — like BitTorrent trackers, for finding node addresses
-- **Optional signaling server** — lightweight relay for initial connection, then direct
-
-**Recommendation:** Support multiple strategies. UPnP for easy cases, Cloudflare Tunnel or Tailscale for harder ones, and a community signaling relay for bootstrapping.
-
-### 3. Node Uptime & Availability
-
-**Problem:** Running Docker 24/7 isn't feasible for everyone. If your node is down, you're invisible and your leased messages go dark on other nodes.
-
-**Options:**
-- **Accept the limitation** — "your node, your uptime"
-- **Grace period for leases** — cached keys survive N hours of downtime
-- **"Bring your own VPS" guides** — $5/month VPS running ConnectHub
-- **Multi-tenant hosting** — friends host for friends (already planned)
-- **Paid hosted-node service** — "ConnectHub Cloud" where someone runs your node (you still own it cryptographically)
-
-**Recommendation:** Grace periods + multi-tenant hosting cover most cases. VPS guides for power users. Hosted service is a future option.
-
-### 4. Trust Model for Groups
-
-**Problem:** In a group Space, messages from each member are leased blobs on every other member's node. Do you trust all members' nodes to properly handle lease expiry?
-
-**Answer:** You don't need to trust them. The encrypted lease model means they **can't** read expired messages regardless of whether their node honors the protocol. The only trust question is: will they delete the unreadable blobs, or will they accumulate dead data? That's a storage concern, not a privacy concern.
-
-### 5. Registration & Identity
+### 1. Registration & Identity Discovery
 
 **Problem:** No phone number, no email — how do users find each other?
 
-**Options:**
-- **Public key / fingerprint** — share out of band (QR code, copy-paste)
-- **Username@node-address** — like email (`alice@alice-node.duckdns.org`)
-- **Vanity names on optional directory** — opt-in searchable directory
-- **QR code scan** — in-person contact exchange (like Briar)
+**Options under consideration:**
+- **Username@server-address** — human-readable, like email (`alice@chat.mycommunity.com`)
+- **Public key fingerprint** — share via QR code or copy-paste for verification
+- **In-server discovery** — search for users within the same server by username
+- **Cross-server discovery** — future consideration if/when federation is added
 
-**Recommendation:** Primary identity is public key. Support `username@node-address` for human-readable sharing. Optional directory for discoverability. QR codes for in-person.
+**Leaning:** Username@server for sharing, public key fingerprint for verification (Safety Numbers like Signal). In-server username search for V1.
 
-### 6. Moderation in Spaces
+### 2. Cross-Server Communication (Federation)
 
-**Problem:** Discord-like Spaces need moderation (ban, mute, delete messages). But "delete messages" conflicts with "sender owns messages."
-
-**Resolution:**
-- **Admins can remove a member** — their leased blobs become inaccessible (equivalent to kill switch from the Space's perspective)
-- **Admins can hide messages** — mark as hidden in the Space view, even if the sender's node still serves them
-- **Admins cannot delete from sender's node** — consistent with ownership model
-- **Banned users' nodes stop receiving Space updates**
-
-### 7. Abuse Prevention
-
-**Problem:** If there's no central authority, how do you prevent spam, harassment, abuse?
+**Problem:** If Alice is on `server-a.com` and Bob is on `server-b.com`, can they chat?
 
 **Options:**
-- **Contact request model** — must accept before someone can message you (like Signal)
-- **Space invitations** — must be invited to join a Space
-- **Block at node level** — refuse all connections from a specific public key
-- **Reputation/trust scores** — earned through mutual contacts (web of trust)
-- **Rate limiting** — per-connection message rate limits
+- **V1: No federation** — users must be on the same server. Simple, proven.
+- **V2+: Federation** — servers relay messages between each other. Complex but powerful.
+- **DMs across servers** — even without full federation, allow 1:1 DMs across server boundaries
 
-### 8. Legal & Compliance
+**Leaning:** No federation for V1. Focus on making a single server great. Federation is a V3 feature.
 
-**Problem:** If users can make messages disappear, how does this interact with legal retention requirements?
+### 3. Client-Side Key Backup & Recovery
 
-**Answer:** This is the user's responsibility. ConnectHub provides the tool. Users in regulated industries should configure retention policies accordingly. The node admin controls their own retention settings. This is no different from Signal's disappearing messages.
-
-## Technical Decisions Needed
-
-### Database: SQLite Concurrency
-
-SQLite has write concurrency limits (WAL mode helps, but still single-writer). For a single-user node this is fine. For multi-tenant hosting with many active users, this could bottleneck.
-
-**Mitigation:** Each tenant gets their own SQLite file. The manager process doesn't share databases across tenants.
-
-### WebRTC: Group Call Architecture
-
-For 5+ person calls, full mesh is impractical. Options:
-- **One node acts as temporary SFU** — the "host" node forwards streams
-- **Dedicated SFU container** — run Signal's open-source Calling Service
-- **External SFU service** — LiveKit, Janus, or mediasoup
-
-**Recommendation:** Start with mesh for small groups (2-4). Add SFU capability for 5+ using Signal's open-source Calling Service or mediasoup.
-
-### Mobile App Strategy
-
-The node must be running for the phone app to work. Phone can't BE the node.
+**Problem:** If a user loses their device, they lose their private keys and all ability to decrypt messages.
 
 **Options:**
-- **Progressive Web App (PWA)** — works on all platforms, no app store needed
-- **React Native** — native feel, shared codebase
-- **Capacitor** — wrap the web app in a native shell
+- **Passphrase-derived key backup** — encrypt private keys with a user-chosen passphrase, store encrypted backup on server (like Signal's SVR)
+- **Recovery codes** — generate a one-time recovery code at registration
+- **Multi-device as backup** — if you have 2+ devices linked, losing one isn't catastrophic
+- **Accept the loss** — "you lose your device, you start fresh" (most private, worst UX)
 
-**Recommendation:** PWA for v1 (fastest to ship, no app store gatekeepers). React Native for v2 if native features are needed (push notifications, background sync).
+**Leaning:** Passphrase-derived backup stored (encrypted) on server. Similar to Signal's PIN-based backup. User enters passphrase to recover keys on new device. Server cannot decrypt the backup.
 
-### Push Notifications (Mobile)
+### 4. Abuse Prevention
 
-Without a central server, how does a mobile thin client know there's a new message?
+**Problem:** How to prevent spam, harassment, and abuse?
+
+**Decided mechanisms:**
+- Contact/friend request model for DMs (must accept before someone can message you)
+- Space invitations (must be invited to join)
+- Server-level bans (admin removes user entirely)
+- Rate limiting on the server
+
+**Open:**
+- Should there be a report mechanism? To whom — the server admin?
+- Block at client level (hide user) vs server level (prevent routing)?
+- How to handle abuse in open-registration servers?
+
+### 5. Client Distribution
+
+**Problem:** How do users get the ConnectHub client?
 
 **Options:**
-- **Web Push API** — works for PWAs, no app store needed
-- **UnifiedPush** — open-source push notification protocol (self-hostable)
-- **Keep WebSocket alive** — background connection (battery impact)
-- **Polling** — check periodically (latency tradeoff)
+- **Web client** — just visit `chat.mycommunity.com` in a browser. No install needed. (V1)
+- **Electron desktop app** — installable, better notifications, persistent connection (V2)
+- **PWA** — installable from browser, works on mobile (V1)
+- **React Native mobile app** — native mobile experience (V3)
 
-**Recommendation:** UnifiedPush for Android (self-hostable, privacy-friendly). Web Push for iOS PWA. WebSocket for desktop.
+**Leaning:** Web client + PWA for V1. Electron for V2. React Native for V3.
+
+### 6. MLS Implementation Choice — DECIDED
+
+**Decision:** `ts-mls` — pure TypeScript MLS (RFC 9420) implementation.
+
+- Runs on both Bun server and browser client (same codebase)
+- Uses WebCrypto API (`crypto.subtle`)
+- Supports post-quantum cipher suites (ML-KEM, ML-DSA, X-Wing)
+- npm published, actively maintained
+- **Risk:** No formal security audit. Plan for third-party audit before production launch.
+
+`openmls` was rejected — no published npm/WASM package, no JS bindings. `@signalapp/libsignal-client` was rejected — N-API native addon, doesn't work in browser, unreliable in Bun.
+
+For 1:1 DMs (Signal Protocol): `2key-ratchet` — pure TypeScript X3DH + Double Ratchet on WebCrypto. Uses P-256 instead of Curve25519 (acceptable since we're not federating with Signal).
+
+### 7. Database Schema Design
+
+**Problem:** How to structure the SQLite database for the server?
+
+**Key tables needed:**
+- `users` — public keys, prekeys, registration metadata
+- `spaces` — encrypted config blobs, membership
+- `channels` — encrypted metadata, SpaceID reference
+- `messages` — encrypted blobs, LeaseEnvelopes, channel reference, timestamps
+- `mls_state` — MLS tree state per Space
+- `media` — encrypted file blobs, referenced by messages
+
+**Open:** Exact schema design. To be finalized during implementation.
+
+## Technical Risks
+
+### 1. MLS at Scale
+MLS (RFC 9420) is standardized but relatively new in production. Large-group behavior (1000+ members) may have edge cases. Mitigation: start with smaller communities, test thoroughly.
+
+### 2. LeaseKey Envelope Size
+Adding a LeaseEnvelope to every message increases per-message overhead. Need to measure actual size impact. Mitigation: LeaseEnvelopes are small (< 256 bytes typically).
+
+### 3. Kill Switch Latency
+When a user triggers a kill switch, there's a propagation delay — the server must delete envelopes and broadcast REVOKE to all connected clients. Offline clients won't know until they reconnect. Mitigation: TTL-based expiry as a fallback; kill switch is the fast path.
+
+### 4. SQLite Write Contention
+High-traffic servers with many concurrent message sends may hit SQLite's single-writer limitation. Mitigation: WAL mode, write batching, and consider PostgreSQL option for large deployments.
